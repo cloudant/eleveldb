@@ -16,6 +16,8 @@
   #else
     #define BIG_ENDIAN
   #endif
+#elif defined(OS_FREEBSD)
+  #include <sys/endian.h>
 #else
   #include <endian.h>
 #endif
@@ -33,13 +35,13 @@
 #define IS_LITTLE_ENDIAN (__BYTE_ORDER == __LITTLE_ENDIAN)
 #endif
 
-#if defined(OS_MACOSX) || defined(OS_SOLARIS)
+#if defined(OS_MACOSX) || defined(OS_SOLARIS) || defined(OS_FREEBSD)
 #define fread_unlocked fread
 #define fwrite_unlocked fwrite
 #define fflush_unlocked fflush
 #endif
 
-#if defined(OS_MACOSX)
+#if defined(OS_MACOSX) || defined(OS_FREEBSD)
 #define fdatasync fsync
 #endif
 
