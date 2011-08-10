@@ -16,7 +16,8 @@
   #else
     #define BIG_ENDIAN
   #endif
-#elif defined(OS_FREEBSD) || defined(OS_OPENBSD) || defined(OS_DRAGONFLYBSD)
+#elif defined(OS_FREEBSD) || defined(OS_OPENBSD) || defined(OS_NETBSD) ||\
+      defined(OS_DRAGONFLYBSD)
   #include <sys/types.h>
   #include <sys/endian.h>
 #else
@@ -37,14 +38,14 @@
 #endif
 
 #if defined(OS_MACOSX) || defined(OS_SOLARIS) || defined(OS_FREEBSD) ||\
-    defined(OS_OPENBSD) || defined(OS_DRAGONFLYBSD)
+    defined(OS_NETBSD) || defined(OS_OPENBSD) || defined(OS_DRAGONFLYBSD)
 #define fread_unlocked fread
 #define fwrite_unlocked fwrite
 #define fflush_unlocked fflush
 #endif
 
-#if defined(OS_MACOSX) || defined(OS_FREEBSD) || defined(OS_OPENBSD) ||\
-    defined(OS_DRAGONFLYBSD)
+#if defined(OS_MACOSX) || defined(OS_FREEBSD) ||\
+    defined(OS_OPENBSD) || defined(OS_DRAGONFLYBSD)
 #define fdatasync fsync
 #endif
 
