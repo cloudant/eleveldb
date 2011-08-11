@@ -35,6 +35,11 @@ case `uname -s` in
         echo "PLATFORM_CFLAGS=-D_REENTRANT -DOS_FREEBSD"  >> build_config.mk
         echo "PLATFORM_LDFLAGS=-lpthread" >> build_config.mk
         ;;
+    OpenBSD)
+        PLATFORM=OS_OPENBSD
+        echo "PLATFORM_CFLAGS=-D_REENTRANT -DOS_OPENBSD"  >> build_config.mk
+        echo "PLATFORM_LDFLAGS=-lpthread" >> build_config.mk
+        ;;
     *)
         echo "Unknown platform!"
         exit 1
