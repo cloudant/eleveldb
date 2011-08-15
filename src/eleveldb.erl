@@ -26,6 +26,11 @@
          put/4,
          delete/3,
          write/3,
+         batch/1,
+         batch_put/3,
+         batch_delete/2,
+         batch_write/2,
+         batch_flush/2,
          snapshot/1,
          fold/4,
          fold_keys/4,
@@ -87,6 +92,8 @@ init() ->
 
 -opaque db_ref() :: binary().
 
+-opaque batch_ref() :: binary().
+
 -opaque ss_ref() :: binary().
 
 -opaque itr_ref() :: binary().
@@ -109,6 +116,26 @@ delete(Ref, Key, Opts) ->
 
 -spec write(db_ref(), write_actions(), write_options()) -> ok | {error, any()}.
 write(_Ref, _Updates, _Opts) ->
+    erlang:nif_error({error, not_loaded}).
+
+-spec batch(db_ref()) -> {ok, batch_ref()} | {error, any()}.
+batch(_Ref) ->
+    erlang:nif_error({error, not_loaded}).
+
+-spec batch_put(batch_ref(), binary(), binary()) -> ok | {error, any()}.
+batch_put(Ref, Key, Value) ->
+    batch_write(Ref, [{put, Key, Value}]).
+    
+-spec batch_delete(batch_ref(), binary()) -> ok | {error, any()}.
+batch_delete(Ref, Key) ->
+    batch_write(Ref, [{delete, Key}]).
+
+-spec batch_write(batch_ref(), write_actions()) -> ok | {error, any()}.
+batch_write(_Ref, _Updates) ->
+    erlang:nif_error({error, not_loaded}).
+
+-spec batch_flush(batch_ref(), write_options()) -> ok | {error, any()}.
+batch_flush(_Ref, _Opts) ->
     erlang:nif_error({error, not_loaded}).
 
 -spec snapshot(db_ref()) -> {ok, ss_ref()} | {error, any()}.
@@ -200,6 +227,19 @@ open_test() ->
     {ok, <<"123">>} = ?MODULE:get(Ref, <<"abc">>, []),
     not_found = ?MODULE:get(Ref, <<"def">>, []).
 
+
+batch_test() ->
+    os:cmd("rm -rf /tmp/eleveldb.batch.test"),
+    {ok, DbRef} = open("/tmp/eleveldb.batch.test", [{create_if_missing, true}]),
+    {ok, Batch} = batch(DbRef),
+    ok = batch_put(Batch, <<"def">>, <<"456">>),
+    ok = batch_put(Batch, <<"abc">>, <<"123">>),
+    ok = batch_put(Batch, <<"hij">>, <<"789">>),
+    batch_flush(Batch, []),
+    [{<<"abc">>, <<"123">>},
+     {<<"def">>, <<"456">>},
+     {<<"hij">>, <<"789">>}] = lists:reverse(fold(DbRef, fun({K, V}, Acc) -> [{K, V} | Acc] end,
+                                                [], [])).
 
 snapshot_test() ->
     os:cmd("rm -rf /tmp/eleveldb.snapshot.test"),

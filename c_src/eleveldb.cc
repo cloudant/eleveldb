@@ -27,6 +27,7 @@
 #include "leveldb/cache.h"
 
 static ErlNifResourceType* eleveldb_db_RESOURCE;
+static ErlNifResourceType* eleveldb_batch_RESOURCE;
 static ErlNifResourceType* eleveldb_itr_RESOURCE;
 static ErlNifResourceType* eleveldb_ss_RESOURCE;
 
@@ -35,6 +36,13 @@ typedef struct
     leveldb::DB* db;
     leveldb::Options options;
 } eleveldb_db_handle;
+
+typedef struct
+{
+    leveldb::WriteBatch*    batch;
+    ErlNifMutex*            batch_lock;
+    eleveldb_db_handle*     db_handle;
+} eleveldb_batch_handle;
 
 typedef struct
 {
@@ -51,6 +59,24 @@ typedef struct
     eleveldb_db_handle* db_handle;
     bool keys_only;
 } eleveldb_itr_handle;
+
+class MLock {
+    // RAII class for mutex control
+    public:
+        MLock(ErlNifMutex* mutex)
+        {
+            this->mutex = mutex;
+            enif_mutex_lock(this->mutex);
+        }
+        
+        ~MLock()
+        {
+            enif_mutex_unlock(this->mutex);
+        }
+
+    private:
+        ErlNifMutex* mutex;
+};
 
 // Atoms (initialized in on_load)
 static ERL_NIF_TERM ATOM_TRUE;
@@ -93,6 +119,9 @@ static ErlNifFunc nif_funcs[] =
     {"open", 2, eleveldb_open},
     {"get", 3, eleveldb_get},
     {"write", 3, eleveldb_write},
+    {"batch", 1, eleveldb_batch},
+    {"batch_write", 2, eleveldb_batch_write},
+    {"batch_flush", 2, eleveldb_batch_flush},
     {"snapshot", 1, eleveldb_snapshot},
     {"iterator", 2, eleveldb_iterator},
     {"iterator", 3, eleveldb_iterator},
@@ -373,6 +402,103 @@ ERL_NIF_TERM eleveldb_write(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[])
     }
 }
 
+ERL_NIF_TERM eleveldb_batch(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[])
+{
+    eleveldb_db_handle* db_handle;
+    if (enif_get_resource(env, argv[0], eleveldb_db_RESOURCE, (void**)&db_handle))
+    {
+        enif_keep_resource(db_handle);
+        
+        eleveldb_batch_handle* batch_handle =
+            (eleveldb_batch_handle*) enif_alloc_resource(eleveldb_batch_RESOURCE,
+                                                        sizeof(eleveldb_batch_handle));
+        memset(batch_handle, '\0', sizeof(eleveldb_batch_handle));
+        
+        batch_handle->batch = new leveldb::WriteBatch(),
+        batch_handle->batch_lock = enif_mutex_create((char*)"eleveldb_batch_lock");
+        batch_handle->db_handle = db_handle;
+        
+        ERL_NIF_TERM result = enif_make_resource(env, batch_handle);
+        enif_release_resource(batch_handle);
+        return enif_make_tuple2(env, ATOM_OK, result);
+    }
+    else
+    {
+        return enif_make_badarg(env);
+    }
+}
+
+ERL_NIF_TERM eleveldb_batch_write(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[])
+{
+    eleveldb_batch_handle* handle;
+    if (enif_get_resource(env, argv[0], eleveldb_batch_RESOURCE, (void**)&handle) &&
+        enif_is_list(env, argv[1])) // Actions
+    {
+        MLock(handle->batch_lock);
+
+        // Store the write actions in the batch
+        
+        if (handle->batch == 0)
+        {
+            return enif_make_badarg(env);
+        }
+        
+        ERL_NIF_TERM result = fold(env, argv[1], write_batch_item, *(handle->batch));
+        if (result == ATOM_OK)
+        {
+            return ATOM_OK;
+        }
+        else
+        {
+            return enif_make_tuple2(env, ATOM_ERROR,
+                                    enif_make_tuple2(env, ATOM_BAD_WRITE_ACTION,
+                                                     result));
+        }
+    }
+    else
+    {
+        return enif_make_badarg(env);
+    }
+    
+}
+
+ERL_NIF_TERM eleveldb_batch_flush(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[])
+{
+    eleveldb_batch_handle* handle;
+    if (enif_get_resource(env, argv[0], eleveldb_batch_RESOURCE, (void**)&handle) &&
+        enif_is_list(env, argv[1])) // Opts
+    {
+        MLock(handle->batch_lock);
+        
+        if(handle->batch == NULL)
+        {
+            return enif_make_badarg(env);
+        }
+
+        // Parse out the write options
+        leveldb::WriteOptions opts;
+        fold(env, argv[1], parse_write_option, opts);
+
+        // TODO: Why does the API want a WriteBatch* versus a ref?
+        leveldb::Status status = handle->db_handle->db->Write(opts, handle->batch);
+        if (status.ok())
+        {
+            delete handle->batch;
+            handle->batch = 0;
+            enif_release_resource(handle->db_handle);
+            return ATOM_OK;
+        }
+        else
+        {
+            return error_tuple(env, ATOM_ERROR_DB_WRITE, status);
+        }
+    }
+    else
+    {
+        return enif_make_badarg(env);
+    }
+}
+
 ERL_NIF_TERM eleveldb_snapshot(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[])
 {
     eleveldb_db_handle* db_handle;
@@ -629,6 +755,18 @@ static void eleveldb_db_resource_cleanup(ErlNifEnv* env, void* arg)
     delete handle->db;
 }
 
+static void eleveldb_batch_resource_cleanup(ErlNifEnv* env, void* arg)
+{
+    eleveldb_batch_handle* handle = (eleveldb_batch_handle*) arg;
+    if (handle->batch != 0)
+    {
+        delete handle->batch;
+        enif_release_resource(handle->db_handle);
+    }
+    
+    enif_mutex_destroy(handle->batch_lock);
+}
+
 static void eleveldb_ss_resource_cleanup(ErlNifEnv* env, void* arg)
 {
     // Release the snapshot and our reference to the eleveldb_db_handle
@@ -663,6 +801,9 @@ static int on_load(ErlNifEnv* env, void** priv_data, ERL_NIF_TERM load_info)
     ErlNifResourceFlags flags = (ErlNifResourceFlags)(ERL_NIF_RT_CREATE | ERL_NIF_RT_TAKEOVER);
     eleveldb_db_RESOURCE = enif_open_resource_type(env, NULL, "eleveldb_db_resource",
                                                     &eleveldb_db_resource_cleanup,
+                                                    flags, NULL);
+    eleveldb_batch_RESOURCE = enif_open_resource_type(env, NULL, "eleveldb_batch_resource",
+                                                    &eleveldb_batch_resource_cleanup,
                                                     flags, NULL);
     eleveldb_itr_RESOURCE = enif_open_resource_type(env, NULL, "eleveldb_itr_resource",
                                                      &eleveldb_itr_resource_cleanup,
